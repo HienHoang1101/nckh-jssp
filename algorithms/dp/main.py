@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-width",
         type=int,
-        default=100_000,
+        default=0,
         help="BDP beam width: max states kept per level (0 = unlimited pure DP).",
     )
     return parser.parse_args()

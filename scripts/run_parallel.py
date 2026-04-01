@@ -71,7 +71,7 @@ def run_bnb(instance: str, timeout: int) -> dict:
             os.unlink(tmp)
 
 
-def run_dp(instance: str, timeout: int, bdp_width: int = 10_000) -> dict:
+def run_dp(instance: str, timeout: int, bdp_width: int = 0) -> dict:
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp = f.name
     try:
@@ -151,21 +151,23 @@ def run_sb(instance: str, _timeout: int) -> dict:
 
 # ── Task builder ───────────────────────────────────────────────────────────────
 
-def build_tasks(solver: str, timeout: int, bdp_width: int = 10_000) -> list[tuple]:
+def build_tasks(solver: str, timeout: int, bdp_width: int = 0,
+                instances: list[str] | None = None) -> list[tuple]:
     """Return list of (label, fn, *args) tuples."""
+    inst_list = instances if instances else INSTANCES
     tasks = []
     if solver == "bnb":
-        for inst in INSTANCES:
+        for inst in inst_list:
             tasks.append((f"bnb/{inst}", run_bnb, inst, timeout))
     elif solver == "dp":
-        for inst in INSTANCES:
+        for inst in inst_list:
             tasks.append((f"dp/{inst}", run_dp, inst, timeout, bdp_width))
     elif solver == "gt":
         for rule in GT_RULES:
-            for inst in INSTANCES:
+            for inst in inst_list:
                 tasks.append((f"gt/{inst}/{rule}", run_gt, inst, rule, timeout))
     elif solver == "sb":
-        for inst in INSTANCES:
+        for inst in inst_list:
             tasks.append((f"sb/{inst}", run_sb, inst, timeout))
     return tasks
 
@@ -187,11 +189,14 @@ def main():
     parser.add_argument("output")
     parser.add_argument("--workers", type=int, default=4,
                         help="Number of parallel workers (default: 4)")
-    parser.add_argument("--bdp-width", type=int, default=10_000,
-                        help="BDP beam width for DP solver (default: 10000, 0=unlimited)")
+    parser.add_argument("--bdp-width", type=int, default=0,
+                        help="BDP beam width for DP solver (default: 0=unlimited)")
+    parser.add_argument("--instances", nargs="+", default=None,
+                        help="Specific instances to run (default: all)")
     args = parser.parse_args()
 
-    tasks = build_tasks(args.solver, args.timeout, getattr(args, "bdp_width", 10_000))
+    instances = [i.upper() for i in args.instances] if args.instances else None
+    tasks = build_tasks(args.solver, args.timeout, getattr(args, "bdp_width", 0), instances)
     total = len(tasks)
     print(f"[{args.solver.upper()}] {total} tasks, {args.workers} workers, timeout={args.timeout}s")
 
