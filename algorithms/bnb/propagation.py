@@ -1,12 +1,14 @@
 """
-Constraint Propagation: Immediate Selection + JPS Lower Bound.
+Constraint Propagation: Immediate Selection + JPS Lower Bound + Edge-Finding.
 Carlier & Pinson (1989), Brucker et al. (1994) §5-6.
 
-Edge-finding removed to avoid buggy over-pruning.
-Immediate selection alone is sufficient for FT06/FT10 per Brucker (1994).
+Edge-Finding rules implemented:
+  NOT-LAST:  if r_min(J∪{i}) + p(J∪{i}) + q_i >= UB → i not last  → q_i >= min_{j∈J}(p_j+q_j)
+  NOT-FIRST: if q_min(J∪{i}) + p(J∪{i}) + r_i >= UB → i not first → r_i >= min_{j∈J}(r_j+p_j)
 """
 from __future__ import annotations
 from algorithms.bnb.graph import DisjunctiveGraph
+from itertools import combinations
 import heapq
 
 
@@ -85,14 +87,73 @@ def immediate_selection(graph: DisjunctiveGraph, ub: int) -> bool:
     return True
 
 
+def edge_finding(graph: DisjunctiveGraph, ub: int) -> bool:
+    """
+    NOT-LAST and NOT-FIRST edge-finding rules (Carlier & Pinson 1989).
+    Updates graph.heads and graph.tails in-place.
+    Returns False if infeasibility is detected.
+
+    For machines with <= 9 ops: enumerate all subsets J of Omega_m minus {i}.
+    For larger machines: check singletons, pairs, triples, and full set only.
+    """
+    for m in range(graph.instance.num_machines):
+        ops = graph.instance.machine_ops[m]
+        n = len(ops)
+        if n < 2:
+            continue
+
+        p = [graph.ops[o].duration for o in ops]
+        p_map = {ops[k]: p[k] for k in range(n)}
+
+        # Decide subset sizes: full enum for small, limited for large
+        max_others = n - 1
+        if max_others <= 8:
+            sizes = list(range(1, max_others + 1))
+        else:
+            sizes = list(range(1, 4)) + [max_others]
+
+        for i in ops:
+            others = [o for o in ops if o != i]
+            pi = p_map[i]
+
+            for sz in sizes:
+                if sz > len(others):
+                    break
+                for J in combinations(others, sz):
+                    p_J = sum(p_map[j] for j in J)
+                    p_total = p_J + pi
+                    r_min = min(min(graph.heads[j] for j in J), graph.heads[i])
+                    q_min = min(min(graph.tails[j] for j in J), graph.tails[i])
+
+                    # NOT-LAST: r_min(J∪{i}) + p(J∪{i}) + q_i >= ub
+                    if r_min + p_total + graph.tails[i] >= ub:
+                        min_pq = min(p_map[j] + graph.tails[j] for j in J)
+                        if min_pq > graph.tails[i]:
+                            graph.tails[i] = min_pq
+
+                    # NOT-FIRST: q_min(J∪{i}) + p(J∪{i}) + r_i >= ub
+                    if q_min + p_total + graph.heads[i] >= ub:
+                        min_rp = min(graph.heads[j] + p_map[j] for j in J)
+                        if min_rp > graph.heads[i]:
+                            graph.heads[i] = min_rp
+
+                    if graph.heads[i] + pi + graph.tails[i] >= ub:
+                        return False
+
+    return True
+
+
 def propagate(graph: DisjunctiveGraph, ub: int) -> bool:
     """Propagate constraints. Returns False if infeasible or LB >= ub."""
     if not graph.compute_heads_and_tails():
         return False
     if graph.makespan_lb() >= ub:
         return False
-    # Immediate selection (may iterate internally)
     if not immediate_selection(graph, ub):
+        return False
+    if graph.makespan_lb() >= ub:
+        return False
+    if not edge_finding(graph, ub):
         return False
     if graph.makespan_lb() >= ub:
         return False
