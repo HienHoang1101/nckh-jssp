@@ -98,12 +98,11 @@ def giffler_thompson(instance: JSSPInstance, rule: str = "MWKR") -> Schedule:
     return Schedule(start_times=st, makespan=ms)
 
 
-def schedule_from_graph(graph: DisjunctiveGraph) -> Optional[Schedule]:
-    """Build feasible schedule respecting all fixed arcs, using MWR dispatch."""
+def _schedule_from_graph_rule(graph: DisjunctiveGraph, rule: str) -> Optional[Schedule]:
+    """Build feasible schedule respecting all fixed arcs with a given dispatch rule."""
     inst = graph.instance; n = inst.num_ops
     st = [0]*n; comp = [0]*n; mt = [0]*inst.num_machines
 
-    # Predecessor counting
     pc = [0]*n
     suc: list[list[int]] = [[] for _ in range(n)]
     for i in range(n):
@@ -116,7 +115,6 @@ def schedule_from_graph(graph: DisjunctiveGraph) -> Optional[Schedule]:
     ready = [i for i in range(n) if pc[i]==0]
     for _ in range(n):
         if not ready: return None
-        # Earliest start
         es = {}
         for i in ready:
             op = inst.all_ops[i]
@@ -126,23 +124,27 @@ def schedule_from_graph(graph: DisjunctiveGraph) -> Optional[Schedule]:
             for dp in graph.disj_pred[i]: t = max(t, comp[dp])
             es[i] = t
 
-        # Min earliest completion
         mec = min(es[i]+inst.all_ops[i].duration for i in ready)
-        # Machine
         im = -1
         for i in ready:
             if es[i]+inst.all_ops[i].duration == mec:
                 im = inst.all_ops[i].machine; break
-        # Conflict set
         conf = [i for i in ready if inst.all_ops[i].machine==im and es[i]<mec]
         if not conf: conf = [min(ready, key=lambda i: es[i])]
 
-        # MWR
-        def rw(oid: int) -> int:
-            op = inst.all_ops[oid]
-            return sum(inst.operations[op.job][k].duration
-                      for k in range(op.pos, inst.num_machines))
-        chosen = max(conf, key=rw)
+        if rule == "SPT":
+            chosen = min(conf, key=lambda oid: inst.all_ops[oid].duration)
+        elif rule == "LPT":
+            chosen = max(conf, key=lambda oid: inst.all_ops[oid].duration)
+        elif rule == "FCFS":
+            chosen = min(conf, key=lambda oid: inst.all_ops[oid].job)
+        else:  # MWKR
+            def rw(oid: int) -> int:
+                op = inst.all_ops[oid]
+                return sum(inst.operations[op.job][k].duration
+                          for k in range(op.pos, inst.num_machines))
+            chosen = max(conf, key=rw)
+
         op = inst.all_ops[chosen]
         st[chosen] = es[chosen]
         comp[chosen] = es[chosen] + op.duration
@@ -153,6 +155,16 @@ def schedule_from_graph(graph: DisjunctiveGraph) -> Optional[Schedule]:
             if pc[s]==0: ready.append(s)
 
     return Schedule(start_times=st, makespan=max(comp))
+
+
+def schedule_from_graph(graph: DisjunctiveGraph) -> Optional[Schedule]:
+    """Try multiple dispatch rules, return the schedule with best makespan."""
+    best: Optional[Schedule] = None
+    for rule in ["MWKR", "SPT", "LPT", "FCFS"]:
+        s = _schedule_from_graph_rule(graph, rule)
+        if s is not None and (best is None or s.makespan < best.makespan):
+            best = s
+    return best
 
 
 def critical_path_and_blocks(graph: DisjunctiveGraph,
