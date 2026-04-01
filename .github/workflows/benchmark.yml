@@ -50,9 +50,9 @@ jobs:
       - name: Run DP on all instances
         run: |
           mkdir -p results
-          python run.py dp --all \
-            --timeout ${{ github.event.inputs.timeout || '120' }} \
-            --output results/dp_results.json
+          python scripts/run_dp_safe.py \
+            ${{ github.event.inputs.timeout || '120' }} \
+            results/dp_results.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -72,10 +72,7 @@ jobs:
         run: |
           mkdir -p results/gt_parts
           for rule in SPT LPT MWKR SRPT FCFS; do
-            echo "Running GT with rule: $rule"
-            python run.py gt --all --rule $rule \
-              --output results/gt_parts/gt_${rule}.json > /dev/null
-            echo "Done: $rule -> $(python -c "import json; d=json.load(open('results/gt_parts/gt_${rule}.json')); print(len(d), 'instances')")"
+            python scripts/run_gt_safe.py $rule results/gt_parts/gt_${rule}.json
           done
           python scripts/merge_gt.py
       - uses: actions/upload-artifact@v4

@@ -28,8 +28,9 @@ def norm_dp(row):
         "optimal_proven": row.get("optimal_proven", ""),
         "timed_out":      row.get("timed_out", ""),
         "extra":          json.dumps({
-                              "states": row.get("states_explored", ""),
+                              "states":    row.get("states_explored", ""),
                               "memory_mb": row.get("memory_mb", ""),
+                              "error":     row.get("error", ""),
                           }),
     }
 
@@ -43,7 +44,10 @@ def norm_gt(row):
         "time_s":         "",
         "optimal_proven": "",
         "timed_out":      "",
-        "extra":          json.dumps({"rule": row.get("rule", "")}),
+        "extra":          json.dumps({
+                              "rule":  row.get("rule", ""),
+                              "error": row.get("error", ""),
+                          }),
     }
 
 
