@@ -1,0 +1,10 @@
+# requirements.txt — JSSP DP Solver
+#
+# This project uses only Python standard library modules.
+# No external dependencies are required.
+#
+# Python >= 3.10 is required (for type hint syntax: int | None, etc.)
+#
+# Optional (for development / testing):
+# pytest>=7.0        # if you want to add unit tests
+# memory-profiler    # for detailed memory analysis

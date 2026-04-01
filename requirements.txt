@@ -1,0 +1,13 @@
+# JSSP Branch and Bound Solver
+# No external dependencies required - pure Python 3.10+
+# All standard library modules used:
+#   - collections (deque)
+#   - heapq
+#   - dataclasses
+#   - typing
+#   - logging
+#   - json
+#   - csv
+#   - time
+#   - argparse
+#   - sys

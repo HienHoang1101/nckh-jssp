@@ -1,0 +1,251 @@
+name: JSSP Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      timeout:
+        description: "Timeout (seconds) per instance for bnb/dp"
+        required: false
+        default: "120"
+  push:
+    branches: [main]
+    paths:
+      - "algorithms/**"
+      - "benchmarks/**"
+
+jobs:
+  benchmark-bnb:
+    name: "B&B Solver"
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run B&B on all instances
+        run: |
+          mkdir -p results
+          python run.py bnb --all \
+            --timeout ${{ github.event.inputs.timeout || '120' }} \
+            --output results/bnb_results.csv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bnb-results
+          path: results/bnb_results.csv
+
+  benchmark-dp:
+    name: "DP Solver"
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run DP on all instances
+        run: |
+          mkdir -p results
+          python run.py dp --all \
+            --timeout ${{ github.event.inputs.timeout || '120' }} \
+            --output results/dp_results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dp-results
+          path: results/dp_results.json
+
+  benchmark-gt:
+    name: "Giffler-Thompson Solver"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run GT on all instances (all 5 priority rules)
+        run: |
+          mkdir -p results/gt_parts
+          for rule in SPT LPT MWKR SRPT FCFS; do
+            python run.py gt --all --rule $rule --output results/gt_parts/gt_${rule}.json
+          done
+          python - <<'PYEOF'
+          import json, glob
+          merged = []
+          for fpath in sorted(glob.glob("results/gt_parts/gt_*.json")):
+              with open(fpath) as f:
+                  merged.extend(json.load(f))
+          with open("results/gt_results.json", "w") as f:
+              json.dump(merged, f, indent=2)
+          print(f"GT merged: {len(merged)} rows ({len(merged)//93} rules x 93 instances)")
+          PYEOF
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gt-results
+          path: results/gt_results.json
+
+  benchmark-sb:
+    name: "Shifting Bottleneck Solver"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run SB on all instances
+        run: |
+          mkdir -p results
+          python run.py sb --all --output results/sb_results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sb-results
+          path: results/sb_results.json
+
+  collect-results:
+    name: "Merge Results"
+    runs-on: ubuntu-latest
+    needs: [benchmark-bnb, benchmark-dp, benchmark-gt, benchmark-sb]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          path: results/
+          merge-multiple: false
+      - name: Merge and normalize all results
+        run: |
+          python - <<'EOF'
+          import csv, json, os, glob
+
+          # Normalize each solver's raw record to a common schema:
+          # instance, solver, makespan, bks, gap_pct, time_s,
+          # optimal_proven, timed_out, extra (JSON string for solver-specific fields)
+
+          def norm_bnb(row):
+              return {
+                  "instance":       row.get("instance", ""),
+                  "makespan":       row.get("makespan", ""),
+                  "bks":            row.get("bks", ""),
+                  "gap_pct":        row.get("gap_vs_bks_pct", ""),
+                  "time_s":         row.get("computation_time", ""),
+                  "optimal_proven": row.get("optimal_proven", ""),
+                  "timed_out":      "",
+                  "extra":          json.dumps({"nodes": row.get("nodes_explored", "")}),
+              }
+
+          def norm_dp(row):
+              gap = row.get("gap_percent")
+              return {
+                  "instance":       row.get("instance_name", ""),
+                  "makespan":       row.get("best_makespan", ""),
+                  "bks":            row.get("optimal_makespan", ""),
+                  "gap_pct":        gap,
+                  "time_s":         row.get("computation_time_seconds", ""),
+                  "optimal_proven": row.get("optimal_proven", ""),
+                  "timed_out":      row.get("timed_out", ""),
+                  "extra":          json.dumps({
+                                        "states": row.get("states_explored", ""),
+                                        "memory_mb": row.get("memory_mb", ""),
+                                    }),
+              }
+
+          def norm_gt(row):
+              # gap_vs_bks_pct is already a percentage
+              bks = row.get("bks")
+              mkspan = row.get("makespan")
+              gap = row.get("gap_vs_bks_pct")
+              return {
+                  "instance":       row.get("instance", ""),
+                  "makespan":       mkspan,
+                  "bks":            bks,
+                  "gap_pct":        gap,
+                  "time_s":         "",
+                  "optimal_proven": "",
+                  "timed_out":      "",
+                  "extra":          json.dumps({"rule": row.get("rule", "")}),
+              }
+
+          def norm_sb(row):
+              # gap_vs_bks is absolute difference, convert to pct if possible
+              bks = row.get("bks")
+              mkspan = row.get("makespan")
+              gap_abs = row.get("gap_vs_bks")
+              try:
+                  gap_pct = round(float(gap_abs) / float(bks) * 100, 2) if bks and gap_abs is not None else None
+              except (TypeError, ValueError, ZeroDivisionError):
+                  gap_pct = None
+              return {
+                  "instance":       row.get("instance", ""),
+                  "makespan":       mkspan,
+                  "bks":            bks,
+                  "gap_pct":        gap_pct,
+                  "time_s":         "",
+                  "optimal_proven": "",
+                  "timed_out":      "",
+                  "extra":          json.dumps({"valid": row.get("validation_passed", "")}),
+              }
+
+          NORMALIZERS = {"bnb": norm_bnb, "dp": norm_dp, "gt": norm_gt, "sb": norm_sb}
+          FIELDS = ["solver", "instance", "makespan", "bks", "gap_pct",
+                    "time_s", "optimal_proven", "timed_out", "extra"]
+
+          output = []
+
+          # BNB: CSV
+          for fpath in glob.glob("results/**/*bnb*.csv", recursive=True):
+              with open(fpath, newline="") as f:
+                  for row in csv.DictReader(f):
+                      output.append({"solver": "bnb", **norm_bnb(row)})
+
+          # DP, GT, SB: JSON
+          for solver in ("dp", "gt", "sb"):
+              for fpath in glob.glob(f"results/**/*{solver}*.json", recursive=True):
+                  with open(fpath) as f:
+                      rows = json.load(f)
+                  norm = NORMALIZERS[solver]
+                  for row in rows:
+                      output.append({"solver": solver, **norm(row)})
+
+          if output:
+              with open("results/all_results.csv", "w", newline="") as f:
+                  writer = csv.DictWriter(f, fieldnames=FIELDS)
+                  writer.writeheader()
+                  writer.writerows(output)
+              print(f"Merged {len(output)} rows into all_results.csv")
+          else:
+              print("No results found")
+          EOF
+      - name: Print summary
+        run: |
+          if [ -f results/all_results.csv ]; then
+            echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            python -c "
+          import csv
+          with open('results/all_results.csv') as f:
+              rows = list(csv.DictReader(f))
+          solvers = sorted(set(r['solver'] for r in rows))
+          print(f'{'Solver':<6} {'Instances':>10} {'Optimal':>8} {'Timeout':>8} {'Avg Gap%':>10}')
+          print('-' * 46)
+          for s in solvers:
+              sr = [r for r in rows if r['solver'] == s]
+              n_opt = sum(1 for r in sr if str(r.get('optimal_proven','')).lower() == 'true')
+              n_to  = sum(1 for r in sr if str(r.get('timed_out','')).lower() == 'true')
+              gaps  = [float(r['gap_pct']) for r in sr if r.get('gap_pct') not in ('', 'None', None)]
+              avg_g = f'{sum(gaps)/len(gaps):.2f}' if gaps else 'N/A'
+              print(f'{s.upper():<6} {len(sr):>10} {n_opt:>8} {n_to:>8} {avg_g:>10}')
+            " >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-results
+          path: results/all_results.csv
