@@ -33,7 +33,7 @@ class SolverResult:
 
 # ---------- Giffler-Thompson (Pinedo 2016 Algorithm 7.1.3) ----------
 
-def giffler_thompson(instance: JSSPInstance) -> Schedule:
+def giffler_thompson(instance: JSSPInstance, rule: str = "MWKR") -> Schedule:
     n = instance.num_ops
     st = [0]*n
     machine_time = [0]*instance.num_machines
@@ -73,13 +73,20 @@ def giffler_thompson(instance: JSSPInstance) -> Schedule:
                 if es < t_star:
                     omega_prime.append(oid)
 
-        # Pick from omega': longest remaining processing time (MWR rule)
-        def remaining_work(oid: int) -> int:
-            op = instance.all_ops[oid]
-            return sum(instance.operations[op.job][k].duration
-                      for k in range(op.pos, instance.num_machines))
+        # Pick from omega' based on dispatching rule
+        if rule == "SPT":
+            chosen = min(omega_prime, key=lambda oid: instance.all_ops[oid].duration)
+        elif rule == "LPT":
+            chosen = max(omega_prime, key=lambda oid: instance.all_ops[oid].duration)
+        elif rule == "FCFS":
+            chosen = min(omega_prime, key=lambda oid: instance.all_ops[oid].job)
+        else:  # MWKR (default)
+            def remaining_work(oid: int) -> int:
+                op = instance.all_ops[oid]
+                return sum(instance.operations[op.job][k].duration
+                          for k in range(op.pos, instance.num_machines))
+            chosen = max(omega_prime, key=remaining_work)
 
-        chosen = max(omega_prime, key=remaining_work)
         op = instance.all_ops[chosen]
         es = max(machine_time[op.machine], job_time[op.job])
         st[chosen] = es
@@ -230,10 +237,14 @@ class BranchAndBoundSolver:
         self.t0 = time.time()
         logger.info(f"Solving {self.inst.name}: {self.inst.num_jobs}x{self.inst.num_machines}")
 
-        # Initial UB
-        s0 = giffler_thompson(self.inst)
-        self.ub = s0.makespan; self.best = s0
-        logger.info(f"Initial UB (Giffler-Thompson): {self.ub}")
+        # Initial UB: try multiple dispatching rules, take best
+        best_s0: Optional[Schedule] = None
+        for rule in ["MWKR", "SPT", "LPT", "FCFS"]:
+            s = giffler_thompson(self.inst, rule=rule)
+            if best_s0 is None or s.makespan < best_s0.makespan:
+                best_s0 = s
+        self.ub = best_s0.makespan; self.best = best_s0
+        logger.info(f"Initial UB (best of 4 GT rules): {self.ub}")
 
         # Root LB
         g0 = DisjunctiveGraph(self.inst)

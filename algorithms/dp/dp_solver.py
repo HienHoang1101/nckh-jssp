@@ -91,11 +91,16 @@ class DPSolver:
         timeout: int = 3600,
         enable_state_reduction: bool = True,
         log_interval: int = 100_000,
+        max_width: int = 0,
     ) -> None:
         self.instance = instance
         self.timeout = timeout
         self.enable_state_reduction = enable_state_reduction
         self.log_interval = log_interval
+        # max_width > 0 enables Bounded DP (BDP): keep only the best
+        # max_width states per level, pruning by lower-bound estimate.
+        # 0 = unlimited (pure DP, exact but memory-intensive).
+        self.max_width = max_width
 
         self.dominance = DominanceChecker(instance)
 
@@ -106,6 +111,7 @@ class DPSolver:
         self.total_sequences_generated: int = 0
         self.total_dominated_pruned: int = 0
         self.total_state_reduced: int = 0
+        self.total_bdp_pruned: int = 0
         self._start_time: float = 0.0
 
     # ------------------------------------------------------------------
@@ -163,7 +169,10 @@ class DPSolver:
             result.best_makespan = best.cmax
             result.sequence = [op.global_id for op in best.operations]
             result.schedule = self._build_schedule(best)
-            result.optimal_proven = not result.timed_out
+            # Optimal only if: no timeout AND (no BDP pruning OR found == known optimal)
+            bdp_active = self.max_width > 0 and self.total_bdp_pruned > 0
+            exact_match = (known_optimal is not None and best.cmax == known_optimal)
+            result.optimal_proven = (not result.timed_out) and (not bdp_active or exact_match)
 
             if known_optimal is not None and result.best_makespan is not None:
                 result.gap_percent = round(
@@ -280,21 +289,24 @@ class DPSolver:
                                 elapsed,
                             )
 
-            # Memory management: clear sequences at this level that
-            # are no longer needed (all expansions have been generated)
-            if length < n_ops - 1:
-                for k in keys_at_length:
-                    # Keep for dominance comparison but could free if memory-critical
-                    pass
+            # Free states at this level — all expansions already generated
+            for k in keys_at_length:
+                if k in self.xi_hat:
+                    del self.xi_hat[k]
+
+            # BDP: prune newly generated states at level (length+1)
+            if self.max_width > 0 and length + 1 < n_ops:
+                self._bdp_prune(length + 1)
 
         logger.info(
             "Algorithm complete. Total states explored: %d, "
             "Total sequences generated: %d, Dominated pruned: %d, "
-            "State reduced: %d",
+            "State reduced: %d, BDP pruned: %d",
             self.states_explored,
             self.total_sequences_generated,
             self.total_dominated_pruned,
             self.total_state_reduced,
+            self.total_bdp_pruned,
         )
 
     # ------------------------------------------------------------------
@@ -364,6 +376,68 @@ class DPSolver:
 
         surviving.append(new_seq)
         self.xi_hat[key] = surviving
+
+    # ------------------------------------------------------------------
+    # BDP helpers
+    # ------------------------------------------------------------------
+    def _lb_estimate(self, seq: OrderedPartialSequence) -> int:
+        """
+        Lower bound on final makespan from partial state seq.
+
+        For each machine m:  lb_m = machine_end[m] + remaining work on m
+        For each job j:      lb_j = job_end[j]     + remaining work of j
+        Returns max of all lb values and current cmax.
+        """
+        inst = self.instance
+        job_progress = [0] * inst.n_jobs
+        for op in seq.operations:
+            job_progress[op.job] += 1
+
+        lb = seq.cmax
+        for m in range(inst.n_machines):
+            remaining = 0
+            for j in range(inst.n_jobs):
+                for op_idx in range(job_progress[j], inst.n_machines):
+                    op = inst.ops_by_job[j][op_idx]
+                    if op.machine == m:
+                        remaining += op.processing_time
+            lb = max(lb, seq.machine_end.get(m, 0) + remaining)
+
+        for j in range(inst.n_jobs):
+            remaining = sum(
+                inst.ops_by_job[j][k].processing_time
+                for k in range(job_progress[j], inst.n_machines)
+            )
+            lb = max(lb, seq.job_end.get(j, 0) + remaining)
+
+        return lb
+
+    def _bdp_prune(self, level: int) -> None:
+        """Keep only the best max_width states at *level* by LB estimate."""
+        keys_at_level = [k for k in list(self.xi_hat.keys()) if k.size == level]
+        all_seqs = [
+            (self._lb_estimate(s), kid, s)
+            for kid in keys_at_level
+            for s in self.xi_hat[kid]
+        ]
+        if len(all_seqs) <= self.max_width:
+            return
+
+        all_seqs.sort(key=lambda x: x[0])
+        pruned = len(all_seqs) - self.max_width
+        self.total_bdp_pruned += pruned
+
+        new_level: dict[StateKey, list[OrderedPartialSequence]] = {}
+        for _, kid, s in all_seqs[:self.max_width]:
+            new_level.setdefault(kid, []).append(s)
+
+        for k in keys_at_level:
+            if k in new_level:
+                self.xi_hat[k] = new_level[k]
+            else:
+                del self.xi_hat[k]
+
+        logger.debug("BDP level %d: kept %d / %d states", level, self.max_width, len(all_seqs))
 
     # ------------------------------------------------------------------
     # Helpers

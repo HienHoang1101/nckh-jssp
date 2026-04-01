@@ -64,6 +64,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable state-space reduction (Proposition 5).",
     )
+    parser.add_argument(
+        "--max-width",
+        type=int,
+        default=100_000,
+        help="BDP beam width: max states kept per level (0 = unlimited pure DP).",
+    )
     return parser.parse_args()
 
 
@@ -83,6 +89,7 @@ def run_benchmark(
     instance_name: str,
     timeout: int,
     enable_reduction: bool,
+    max_width: int = 100_000,
 ) -> DPResult | None:
     shared_instance = load_instance(instance_name)
     if shared_instance is None:
@@ -109,6 +116,7 @@ def run_benchmark(
         timeout=timeout,
         enable_state_reduction=enable_reduction,
         log_interval=50_000,
+        max_width=max_width,
     )
     result = solver.solve(known_optimal=optimal)
 
@@ -163,11 +171,12 @@ def main() -> None:
     print(f"Instances: {', '.join(names)}")
     print(f"Timeout:   {args.timeout}s per instance")
     print(f"State-space reduction (Prop. 5): {'ON' if enable_reduction else 'OFF'}")
+    print(f"BDP max width:   {args.max_width if args.max_width > 0 else 'unlimited'}")
     print()
 
     results: list[DPResult] = []
     for name in names:
-        result = run_benchmark(name, args.timeout, enable_reduction)
+        result = run_benchmark(name, args.timeout, enable_reduction, args.max_width)
         if result is not None:
             results.append(result)
 

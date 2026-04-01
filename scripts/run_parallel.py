@@ -49,11 +49,11 @@ def _run_subprocess(cmd: list[str], hard_timeout: int) -> tuple[int, str, str]:
 
 
 def run_bnb(instance: str, timeout: int) -> dict:
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, dir="/tmp") as f:
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
         tmp = f.name
     try:
         rc, _, stderr = _run_subprocess(
-            ["python3", "run.py", "bnb", instance,
+            [sys.executable, "run.py", "bnb", instance,
              "--timeout", str(timeout), "--output", tmp],
             hard_timeout=timeout + 60,
         )
@@ -71,20 +71,24 @@ def run_bnb(instance: str, timeout: int) -> dict:
             os.unlink(tmp)
 
 
-def run_dp(instance: str, timeout: int) -> dict:
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, dir="/tmp") as f:
+def run_dp(instance: str, timeout: int, bdp_width: int = 10_000) -> dict:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp = f.name
     try:
         rc, _, stderr = _run_subprocess(
-            ["python3", "run.py", "dp", instance,
-             "--timeout", str(timeout), "--output", tmp],
+            [sys.executable, "run.py", "dp", instance,
+             "--timeout", str(timeout), "--max-width", str(bdp_width),
+             "--output", tmp],
             hard_timeout=timeout + 60,
         )
         if rc == 0 and os.path.exists(tmp):
-            with open(tmp) as f:
-                data = json.load(f)
-            if data:
-                return data[0]
+            try:
+                with open(tmp) as f:
+                    data = json.load(f)
+                if data:
+                    return data[0]
+            except (json.JSONDecodeError, ValueError):
+                pass
         return {"instance_name": instance, "size": "", "optimal_makespan": None,
                 "best_makespan": None, "gap_percent": None,
                 "computation_time_seconds": timeout, "states_explored": 0,
@@ -97,18 +101,21 @@ def run_dp(instance: str, timeout: int) -> dict:
 
 def run_gt(instance: str, rule: str, _timeout: int) -> dict:
     """GT ignores timeout (heuristic). Returns one result dict per (instance, rule)."""
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, dir="/tmp") as f:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp = f.name
     try:
         rc, _, stderr = _run_subprocess(
-            ["python3", "run.py", "gt", instance, "--rule", rule, "--output", tmp],
+            [sys.executable, "run.py", "gt", instance, "--rule", rule, "--output", tmp],
             hard_timeout=120,
         )
         if rc == 0 and os.path.exists(tmp):
-            with open(tmp) as f:
-                data = json.load(f)
-            if data:
-                return data[0]
+            try:
+                with open(tmp) as f:
+                    data = json.load(f)
+                if data:
+                    return data[0]
+            except (json.JSONDecodeError, ValueError):
+                pass
         return {"instance": instance, "rule": rule, "makespan": None, "bks": None,
                 "gap_vs_bks_pct": None, "validation_passed": False,
                 "error": stderr.strip().splitlines()[-1] if stderr.strip() else "no output"}
@@ -119,18 +126,21 @@ def run_gt(instance: str, rule: str, _timeout: int) -> dict:
 
 def run_sb(instance: str, _timeout: int) -> dict:
     """SB ignores timeout (heuristic)."""
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, dir="/tmp") as f:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp = f.name
     try:
         rc, _, stderr = _run_subprocess(
-            ["python3", "run.py", "sb", instance, "--output", tmp],
+            [sys.executable, "run.py", "sb", instance, "--output", tmp],
             hard_timeout=300,
         )
         if rc == 0 and os.path.exists(tmp):
-            with open(tmp) as f:
-                data = json.load(f)
-            if data:
-                return data[0]
+            try:
+                with open(tmp) as f:
+                    data = json.load(f)
+                if data:
+                    return data[0]
+            except (json.JSONDecodeError, ValueError):
+                pass
         return {"instance": instance, "makespan": None, "bks": None,
                 "gap_vs_bks": None, "validation_passed": False,
                 "error": stderr.strip().splitlines()[-1] if stderr.strip() else "no output"}
@@ -141,7 +151,7 @@ def run_sb(instance: str, _timeout: int) -> dict:
 
 # ── Task builder ───────────────────────────────────────────────────────────────
 
-def build_tasks(solver: str, timeout: int) -> list[tuple]:
+def build_tasks(solver: str, timeout: int, bdp_width: int = 10_000) -> list[tuple]:
     """Return list of (label, fn, *args) tuples."""
     tasks = []
     if solver == "bnb":
@@ -149,7 +159,7 @@ def build_tasks(solver: str, timeout: int) -> list[tuple]:
             tasks.append((f"bnb/{inst}", run_bnb, inst, timeout))
     elif solver == "dp":
         for inst in INSTANCES:
-            tasks.append((f"dp/{inst}", run_dp, inst, timeout))
+            tasks.append((f"dp/{inst}", run_dp, inst, timeout, bdp_width))
     elif solver == "gt":
         for rule in GT_RULES:
             for inst in INSTANCES:
@@ -177,9 +187,11 @@ def main():
     parser.add_argument("output")
     parser.add_argument("--workers", type=int, default=4,
                         help="Number of parallel workers (default: 4)")
+    parser.add_argument("--bdp-width", type=int, default=10_000,
+                        help="BDP beam width for DP solver (default: 10000, 0=unlimited)")
     args = parser.parse_args()
 
-    tasks = build_tasks(args.solver, args.timeout)
+    tasks = build_tasks(args.solver, args.timeout, getattr(args, "bdp_width", 10_000))
     total = len(tasks)
     print(f"[{args.solver.upper()}] {total} tasks, {args.workers} workers, timeout={args.timeout}s")
 
