@@ -72,7 +72,10 @@ jobs:
         run: |
           mkdir -p results/gt_parts
           for rule in SPT LPT MWKR SRPT FCFS; do
-            python run.py gt --all --rule $rule --output results/gt_parts/gt_${rule}.json
+            echo "Running GT with rule: $rule"
+            python run.py gt --all --rule $rule \
+              --output results/gt_parts/gt_${rule}.json > /dev/null
+            echo "Done: $rule -> $(python -c "import json; d=json.load(open('results/gt_parts/gt_${rule}.json')); print(len(d), 'instances')")"
           done
           python scripts/merge_gt.py
       - uses: actions/upload-artifact@v4
@@ -93,7 +96,8 @@ jobs:
       - name: Run SB on all instances
         run: |
           mkdir -p results
-          python run.py sb --all --output results/sb_results.json
+          python run.py sb --all --output results/sb_results.json > /dev/null
+          echo "SB done: $(python -c "import json; d=json.load(open('results/sb_results.json')); print(len(d), 'instances')")"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
