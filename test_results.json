@@ -1,0 +1,32 @@
+[
+  {
+    "instance": "FT06",
+    "best_makespan": 98,
+    "avg_makespan": 108.0,
+    "makespans": [
+      113,
+      103,
+      103,
+      123,
+      98
+    ],
+    "times": [
+      0.013937711715698242,
+      0.01394033432006836,
+      0.01607203483581543,
+      0.014551639556884766,
+      0.013718605041503906
+    ],
+    "total_time": 0.0722203254699707,
+    "runs": 5,
+    "algorithm": "i-TSAB",
+    "config": {
+      "maxE": 10,
+      "tabu_length": 7,
+      "max_iterations": 2,
+      "N_init": 2,
+      "MaxIter_init": 3,
+      "MaxIter_deep": 5
+    }
+  }
+]
