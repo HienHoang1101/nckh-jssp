@@ -71,6 +71,16 @@ class DPResult:
         return json.dumps(self.__dict__, indent=2, default=str)
 
 
+@dataclass
+class IncumbentSolution:
+    """Best complete schedule found so far."""
+
+    makespan: int
+    schedule: list[dict]
+    sequence: list[int]
+    source: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Main DP Solver  (Algorithm 1 — Gromicho et al. 2012)
 # ---------------------------------------------------------------------------
@@ -113,6 +123,9 @@ class DPSolver:
         self.total_state_reduced: int = 0
         self.total_bdp_pruned: int = 0
         self._start_time: float = 0.0
+        self.total_bound_pruned: int = 0
+        self.search_completed: bool = False
+        self.best_complete: IncumbentSolution | None = None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -138,6 +151,7 @@ class DPSolver:
 
         tracemalloc.start()
         self._start_time = time.perf_counter()
+        self._initialise_incumbent()
 
         # Set up timeout via SIGALRM (Unix) or fallback polling
         use_signal = _try_set_alarm(self.timeout)

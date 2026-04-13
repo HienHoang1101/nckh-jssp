@@ -170,54 +170,74 @@ def schedule_from_graph(graph: DisjunctiveGraph) -> Optional[Schedule]:
 def critical_path_and_blocks(graph: DisjunctiveGraph,
                               sched: Schedule) -> list[list[int]]:
     """
-    Get blocks on critical path of a schedule.
-    Block = maximal consecutive same-machine ops on critical path, size >= 2.
+    Extract blocks from the critical path of *sched* using actual start times.
+    A block = maximal run of consecutive same-machine ops on the critical path,
+    size >= 2.  Blocks are returned in critical-path order (first block first).
+
+    For each op i we find the critical predecessor j:
+      st[j] + p[j] == st[i]  AND  j is either the conjunctive pred or a
+      machine predecessor (another op on the same machine in *sched*).
     """
     n = len(graph.ops)
     st = sched.start_times
     ms = sched.makespan
+    p = [graph.ops[i].duration for i in range(n)]
 
-    # Build critical predecessors
-    cpred = [-1]*n
+    # For each machine, build a map: finish_time -> op_id
+    # so we can quickly find which op finishes at a given time on each machine.
+    machine_finish: list[dict[int, int]] = [
+        {} for _ in range(graph.instance.num_machines)
+    ]
     for i in range(n):
-        # Who finishes exactly at st[i]?
-        best = -1
-        # Conjunctive pred
-        cp = graph.conj_pred[i]
-        if cp != DisjunctiveGraph.SOURCE:
-            if st[cp] + graph.ops[cp].duration == st[i]:
-                best = cp
-        # Machine pred
-        for o in graph.instance.machine_ops[graph.ops[i].machine]:
-            if o != i and st[o]+graph.ops[o].duration == st[i]:
-                best = o
-        cpred[i] = best
+        machine_finish[graph.ops[i].machine][st[i] + p[i]] = i
 
-    # Find ops at makespan
-    ends = [i for i in range(n) if st[i]+graph.ops[i].duration == ms]
-    # Trace longest chain
+    # Build critical-predecessor map.
+    # Prefer machine predecessor so blocks (same-machine runs) form correctly.
+    cpred = [-1] * n
+    for i in range(n):
+        ti = st[i]
+        # Machine predecessor takes priority (needed for block structure)
+        m = graph.ops[i].machine
+        j = machine_finish[m].get(ti, -1)
+        if j != -1 and j != i:
+            cpred[i] = j
+            continue
+        # Fallback: conjunctive predecessor
+        cp = graph.conj_pred[i]
+        if cp != DisjunctiveGraph.SOURCE and st[cp] + p[cp] == ti:
+            cpred[i] = cp
+
+    # Find op(s) completing at makespan; trace path backward
     best_path: list[int] = []
-    for e in ends:
-        path = []
+    for e in range(n):
+        if st[e] + p[e] != ms:
+            continue
+        path: list[int] = []
         c = e
         while c != -1:
-            path.append(c); c = cpred[c]
+            path.append(c)
+            c = cpred[c]
         path.reverse()
         if len(path) > len(best_path):
             best_path = path
 
-    # Decompose into blocks
-    if not best_path: return []
+    # Decompose best_path into blocks (maximal same-machine runs, size >= 2)
     blocks: list[list[int]] = []
-    cur = [best_path[0]]; cm = graph.ops[best_path[0]].machine
-    for i in range(1, len(best_path)):
-        m = graph.ops[best_path[i]].machine
-        if m == cm:
-            cur.append(best_path[i])
+    if not best_path:
+        return blocks
+    cur_block = [best_path[0]]
+    cur_m = graph.ops[best_path[0]].machine
+    for idx in range(1, len(best_path)):
+        m = graph.ops[best_path[idx]].machine
+        if m == cur_m:
+            cur_block.append(best_path[idx])
         else:
-            if len(cur)>=2: blocks.append(cur)
-            cur = [best_path[i]]; cm = m
-    if len(cur)>=2: blocks.append(cur)
+            if len(cur_block) >= 2:
+                blocks.append(cur_block)
+            cur_block = [best_path[idx]]
+            cur_m = m
+    if len(cur_block) >= 2:
+        blocks.append(cur_block)
     return blocks
 
 
@@ -320,22 +340,25 @@ class BranchAndBoundSolver:
                 continue
 
             # --- Branching ---
-            children = self._branch(g, node.depth)
+            children = self._branch(g, node.depth, h)
             # DFS: push worst-LB first so best-LB popped first
             children.sort(key=lambda c: c.lb, reverse=True)
             stack.extend(children)
 
         return self.ub < ub_at_start
 
-    def _branch(self, g: DisjunctiveGraph, depth: int) -> list[BBNode]:
+    def _branch(self, g: DisjunctiveGraph, depth: int,
+                h: Optional[Schedule] = None) -> list[BBNode]:
         """
         Try block-based branching (Brucker 1994 §3).
         Fallback: binary disjunction branching (Carlier & Pinson 1989 §3.6).
+        h: heuristic schedule already computed (avoids re-computing).
         """
         children: list[BBNode] = []
 
-        # Block-based: need a heuristic schedule for critical path
-        h = schedule_from_graph(g)
+        # Block-based: reuse existing schedule if provided
+        if h is None:
+            h = schedule_from_graph(g)
         if h:
             blocks = critical_path_and_blocks(g, h)
             if blocks:
@@ -347,42 +370,107 @@ class BranchAndBoundSolver:
 
         return children
 
+    # ------------------------------------------------------------------
+    # Brucker et al. [BJS92/BJS94] specific lower bounds
+    # (handbook §10.2.3, p.362). Cheap pre-pruning before child copy.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _brucker_before_lb(cand: int, others: list[int],
+                           g: DisjunctiveGraph) -> int:
+        """
+        LB when 'cand' moves to the VERY BEGINNING of its block.
+        ri + pi + max( max_j(pj+qj),  Σpj + min_j(qj) )   j ∈ others
+        """
+        if not others:
+            return 0
+        ri = g.heads[cand]; pi = g.ops[cand].duration
+        sum_p  = sum(g.ops[j].duration for j in others)
+        max_pq = max(g.ops[j].duration + g.tails[j] for j in others)
+        min_q  = min(g.tails[j] for j in others)
+        return ri + pi + max(max_pq, sum_p + min_q)
+
+    @staticmethod
+    def _brucker_after_lb(cand: int, others: list[int],
+                          g: DisjunctiveGraph) -> int:
+        """
+        LB when 'cand' moves to the VERY END of its block.
+        max( max_j(rj+pj),  Σpj + min_j(rj) ) + pi + qi   j ∈ others
+        """
+        if not others:
+            return 0
+        qi = g.tails[cand]; pi = g.ops[cand].duration
+        sum_p  = sum(g.ops[j].duration for j in others)
+        max_rp = max(g.heads[j] + g.ops[j].duration for j in others)
+        min_r  = min(g.heads[j] for j in others)
+        return max(max_rp, sum_p + min_r) + pi + qi
+
     def _branch_blocks(self, g: DisjunctiveGraph, blocks: list[list[int]],
                        depth: int) -> list[BBNode]:
         """
-        Brucker (1994) Theorem 3.1:
-        To improve, some op in some block must move before first or after last.
-        Generate children for ALL blocks (sorted largest first).
+        Brucker et al. [BJS92/BJS94] (handbook §10.2.3, p.362):
+
+        For each block B on the critical path generate 2*(|B|-1) children:
+          Before-branch (cand → very beginning of B):
+              Fix ALL arcs  cand → o  for every o ∈ B, o ≠ cand.
+          After-branch  (cand → very end of B):
+              Fix ALL arcs  o → cand  for every o ∈ B, o ≠ cand.
+
+        Fixing all intra-block arcs keeps sub-problems non-intersecting
+        (no solution explored twice within the same block).
+
+        A tight Brucker-specific lower bound pre-prunes children before
+        the expensive graph-copy + topological-sort step.
         """
         children: list[BBNode] = []
-        for block in sorted(blocks, key=len, reverse=True):
-            if len(block) < 2: continue
-            first = block[0]; last = block[-1]
 
-            # Before-candidates: ops in block[1:] that can go before first
-            for cand in block[1:]:
-                if self._timeout(): return children
-                # Check feasibility: cand -> others. If any other->cand already fixed, skip.
-                ok = all(not g.is_fixed(o, cand) for o in block if o != cand)
-                if not ok: continue
+        for block in blocks:
+            if len(block) < 2:
+                continue
+
+            # ── Before-candidates: cand → very BEGINNING of block ────────
+            for cand in block[1:]:          # all except current first
+                if self._timeout():
+                    return children
+                others = [o for o in block if o != cand]
+
+                # Cheap Brucker LB pre-prune (no copy required)
+                blb = self._brucker_before_lb(cand, others, g)
+                if blb >= self.ub:
+                    continue
+
+                # Skip if any arc already forces cand to come AFTER an 'other'
+                if any(g.is_fixed(o, cand) for o in others):
+                    continue
+
                 child = g.copy()
-                for o in block:
-                    if o != cand: child.fix_arc(cand, o)
-                if not child.compute_heads_and_tails(): continue
-                lb = lower_bound(child)
+                for o in others:
+                    child.fix_arc(cand, o)       # cand → every other in block
+                if not child.compute_heads_and_tails():
+                    continue
+                lb = max(blb, lower_bound(child))
                 if lb < self.ub:
                     children.append(BBNode(graph=child, lb=lb, depth=depth+1))
 
-            # After-candidates: ops in block[:-1] that can go after last
-            for cand in block[:-1]:
-                if self._timeout(): return children
-                ok = all(not g.is_fixed(cand, o) for o in block if o != cand)
-                if not ok: continue
+            # ── After-candidates: cand → very END of block ───────────────
+            for cand in block[:-1]:         # all except current last
+                if self._timeout():
+                    return children
+                others = [o for o in block if o != cand]
+
+                blb = self._brucker_after_lb(cand, others, g)
+                if blb >= self.ub:
+                    continue
+
+                if any(g.is_fixed(cand, o) for o in others):
+                    continue
+
                 child = g.copy()
-                for o in block:
-                    if o != cand: child.fix_arc(o, cand)
-                if not child.compute_heads_and_tails(): continue
-                lb = lower_bound(child)
+                for o in others:
+                    child.fix_arc(o, cand)       # every other → cand
+                if not child.compute_heads_and_tails():
+                    continue
+                lb = max(blb, lower_bound(child))
                 if lb < self.ub:
                     children.append(BBNode(graph=child, lb=lb, depth=depth+1))
 
