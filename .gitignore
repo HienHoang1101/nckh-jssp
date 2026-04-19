@@ -30,6 +30,7 @@ env/
 # Results and outputs
 results/
 *.csv
+!results_*.csv
 *.json
 !benchmarks/bks.json
 !benchmarks/data/**/*.txt
