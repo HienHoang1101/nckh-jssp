@@ -120,20 +120,38 @@ def edge_finding(graph: DisjunctiveGraph, ub: int) -> bool:
                 if sz > len(others):
                     break
                 for J in combinations(others, sz):
-                    p_J = sum(p_map[j] for j in J)
+                    # Inline aggregation with plain loops — avoids repeated
+                    # generator-object allocation inside the hot inner loop.
+                    p_J = 0
+                    r_min = graph.heads[i]
+                    q_min = graph.tails[i]
+                    for j in J:
+                        p_J += p_map[j]
+                        hj = graph.heads[j]
+                        if hj < r_min:
+                            r_min = hj
+                        tj = graph.tails[j]
+                        if tj < q_min:
+                            q_min = tj
                     p_total = p_J + pi
-                    r_min = min(min(graph.heads[j] for j in J), graph.heads[i])
-                    q_min = min(min(graph.tails[j] for j in J), graph.tails[i])
 
                     # NOT-LAST: r_min(J∪{i}) + p(J∪{i}) + q_i >= ub
                     if r_min + p_total + graph.tails[i] >= ub:
-                        min_pq = min(p_map[j] + graph.tails[j] for j in J)
+                        min_pq = graph.tails[i]  # sentinel — will be beaten by any j
+                        for j in J:
+                            pq = p_map[j] + graph.tails[j]
+                            if pq < min_pq:
+                                min_pq = pq
                         if min_pq > graph.tails[i]:
                             graph.tails[i] = min_pq
 
                     # NOT-FIRST: q_min(J∪{i}) + p(J∪{i}) + r_i >= ub
                     if q_min + p_total + graph.heads[i] >= ub:
-                        min_rp = min(graph.heads[j] + p_map[j] for j in J)
+                        min_rp = graph.heads[i]  # sentinel
+                        for j in J:
+                            rp = graph.heads[j] + p_map[j]
+                            if rp < min_rp:
+                                min_rp = rp
                         if min_rp > graph.heads[i]:
                             graph.heads[i] = min_rp
 

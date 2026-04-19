@@ -103,6 +103,22 @@ class JSSPInstance:
                 self.ops_by_job[j].append(op)
                 self.pmax = max(self.pmax, ptime)
                 gid += 1
+        
+        # Optimization #2: Precompute remaining load for _lb_estimate
+        # remaining_load[j][k][m] = total processing time of job j on machine m
+        # from operation k onwards
+        self.remaining_load: list[list[list[int]]] = []
+        for j in range(self.n_jobs):
+            ops = self.ops_by_job[j]
+            n = len(ops)
+            # Suffix sum by machine
+            table = [[0] * self.n_machines for _ in range(n + 1)]
+            for k in range(n - 1, -1, -1):
+                op = ops[k]
+                for m in range(self.n_machines):
+                    table[k][m] = table[k + 1][m]
+                table[k][op.machine] += op.processing_time
+            self.remaining_load.append(table)
 
     def get_operation(self, job: int, op_index: int) -> Operation:
         """Return the operation for job *job* at position *op_index*."""
@@ -225,6 +241,7 @@ class OrderedPartialSequence:
       - Machine completion times: when each machine finishes its last op in T
       - Job completion times: when each job finishes its last op in T
       - The last machine i*(T) for ordering tie-breaks
+      - job_progress: how many ops of each job are scheduled (avoids recomputation)
     """
 
     operations: list[Operation]
@@ -232,6 +249,7 @@ class OrderedPartialSequence:
     machine_end: dict[int, int]    # machine → completion time
     job_end: dict[int, int]        # job → completion time
     last_machine: int              # i*(T) — machine of last operation
+    job_progress: list[int]        # job_progress[j] = #ops of job j in sequence
 
     @classmethod
     def create_single(
@@ -242,12 +260,15 @@ class OrderedPartialSequence:
         job_end = {j: 0 for j in range(inst.n_jobs)}
         machine_end[op.machine] = op.processing_time
         job_end[op.job] = op.processing_time
+        progress = [0] * inst.n_jobs
+        progress[op.job] = 1
         return cls(
             operations=[op],
             cmax=op.processing_time,
             machine_end=machine_end,
             job_end=job_end,
             last_machine=op.machine,
+            job_progress=progress,
         )
 
     def earliest_start(self, op: Operation, inst: JSSPInstance) -> int:
@@ -309,12 +330,16 @@ class OrderedPartialSequence:
 
         new_cmax = max(self.cmax, end)
 
+        new_progress = list(self.job_progress)
+        new_progress[op.job] += 1
+
         return OrderedPartialSequence(
             operations=new_ops,
             cmax=new_cmax,
             machine_end=new_machine_end,
             job_end=new_job_end,
             last_machine=op.machine,
+            job_progress=new_progress,
         )
 
     def get_op_set(self) -> frozenset[Operation]:
