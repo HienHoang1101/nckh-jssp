@@ -1,0 +1,2 @@
+﻿Instance;Kích thước;BKS;Makespan (Best);Makespan (Avg);Makespan (Worst);RE_best (%);RE_avg (%);RE_worst (%);Time_avg (s);Time_total (s);OPT/Runs;Status
+FT06;6x6;55;55;55.00;55;0.0000;0.0000;0.0000;0.01;0.02;3/3;OPT
