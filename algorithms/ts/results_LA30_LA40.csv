@@ -1,0 +1,2 @@
+﻿Instance;Kích thước;BKS;Makespan (Best);Makespan (Avg);Makespan (Worst);RE_best (%);RE_avg (%);RE_worst (%);Time_avg (s);Time_total (s);OPT/Runs;Status
+LA30;20x10;1355;1355;1355.00;1355;0.0000;0.0000;0.0000;8.10;40.48;5/5;OPT
